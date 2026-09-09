@@ -1,151 +1,315 @@
 # DEX AMM Project
 
-A decentralized exchange (DEX) smart contract protocol implementing an Automated Market Maker (AMM) based on the Uniswap V2 constant product invariant ($x \cdot y = k$) with a 0.3% trading fee, internal LP share accounting, OpenZeppelin `SafeERC20` token transfers, reentrancy protection, strict subsequent liquidity ratio enforcement, and 18-decimal precision price calculation.
+A decentralized exchange (DEX) smart contract protocol implementing an Automated Market Maker (AMM) based on the constant-product invariant ($x \cdot y = k$). The protocol features automated liquidity management, token swaps with an integrated 0.3% trading fee, internal LP share accounting, OpenZeppelin `SafeERC20` token safety, `ReentrancyGuard` protection, strict reserve-ratio enforcement for subsequent liquidity additions, and 18-decimal fixed-point price calculations.
 
-Developed by **KALARI SRISUCHA** ([@sucha6174](https://github.com/sucha6174)).
+Author: **KALARI SRISUCHA** ([@sucha6174](https://github.com/sucha6174))
 
 ---
 
 ## Overview
 
-The DEX AMM protocol facilitates trustless, peer-to-pool token swaps and permissionless liquidity provision without relying on off-chain order books or centralized intermediaries. 
+This project implements a simplified decentralized exchange using an Automated Market Maker (AMM) model inspired by the constant-product approach. It facilitates peer-to-pool token trading and permissionless liquidity provision without relying on traditional central order books or centralized market makers.
 
-Key design characteristics:
-- **Constant Product Market Maker**: Maintains the $x \cdot y = k$ invariant across token swaps.
-- **Proportional Fee Accrual**: Imposes a 0.3% fee ($997/1000$ multiplier) on swaps that stays inside the pool reserves, automatically compounding the value of liquidity provider (LP) shares over time.
-- **Strict Reserve Ratio Enforcement**: For subsequent liquidity deposits, enforces that deposited tokens match the existing pool reserve ratio ($amountB == (amountA \cdot reserveB) / reserveA$), eliminating pool price manipulation and arbitrary LP dilution.
-- **Defensive Security Model**: Protects against reentrancy using OpenZeppelin's `ReentrancyGuard` with Checks-Effects-Interactions (CEI) architecture, and prevents silent ERC-20 transfer failures by using OpenZeppelin's `SafeERC20`.
-- **High-Precision Price Discovery**: Computes relative spot prices scaled by $10^{18}$ (`(reserveB * 1e18) / reserveA`), eliminating integer division truncation when $reserveB < reserveA$, and returning `0` gracefully when reserves are empty.
+Through the smart contracts, users can:
+- **Provide Liquidity**: Deposit pairs of ERC-20 tokens (`Token A` and `Token B`) into the liquidity pool.
+- **Receive LP Shares**: Mint liquidity provider (LP) shares that represent proportional ownership of the underlying pool assets.
+- **Remove Liquidity**: Burn LP shares at any time to withdraw their proportional share of both tokens, including accumulated trading fees.
+- **Swap Tokens**: Execute bidirectional swaps (Token A $\rightarrow$ Token B and Token B $\rightarrow$ Token A) with deterministic on-chain pricing.
+- **Earn Trading Fees**: Liquidity providers automatically earn a 0.3% fee on every swap executed through the pool, increasing the redemption value of their LP shares.
+
+*Note: This project is an educational and technical demonstration. It is not professionally audited and is not intended for mainnet financial deployment.*
 
 ---
 
 ## Features
 
-- **Initial Liquidity Provision**: The genesis liquidity provider sets the initial exchange rate between Token A and Token B. LP tokens are minted equal to the geometric mean $\sqrt{amountA \cdot amountB}$.
-- **Subsequent Liquidity Provision**: Subsequent providers must contribute tokens matching the current reserve ratio ($amountB == (amountA \cdot reserveB) / reserveA$). LP tokens are minted proportionally to their share of Token A reserves: $(amountA \cdot totalLiquidity) / reserveA$.
-- **Liquidity Removal**: Liquidity providers burn their LP tokens to withdraw their proportional share of both underlying token reserves, capturing all accumulated trading fees without external accounting.
-- **Constant Product Swaps**: Supports bidirectional swaps (Token A $\rightarrow$ Token B and Token B $\rightarrow$ Token A) with deterministic pricing.
-- **0.3% Trading Fee**: A 30 bps fee is deducted from the input token amount during swap execution and added directly into pool reserves.
-- **Fee Accumulation**: As trading occurs, reserves grow relative to the circulating LP shares, increasing the redemption value of every minted LP unit.
-- **Precision Price Calculation**: On-chain spot price query scaled by $10^{18}$ fixed-point representation.
-- **Complete Event Logging**: Comprehensive event emission for `LiquidityAdded`, `LiquidityRemoved`, and `Swap` with indexed addresses for off-chain indexing.
+The repository contains a fully functional, tested AMM protocol implementing the following features:
+
+- **Initial Liquidity Provision**: The first liquidity provider sets the initial pool ratio and price, minting LP tokens based on the geometric mean of deposits.
+- **Subsequent Liquidity with Reserve-Ratio Enforcement**: Subsequent deposits must match the exact existing reserve ratio, preventing price manipulation and LP dilution.
+- **Internal LP Token Accounting**: Tracks provider shares directly within the contract via `liquidity` mapping and `totalLiquidity` tracking.
+- **Proportional Liquidity Removal**: Burns LP shares and distributes proportional shares of both token reserves back to the provider.
+- **Bidirectional Token Swaps**: Supports direct swaps from Token A to Token B (`swapAForB`) and Token B to Token A (`swapBForA`).
+- **Constant Product AMM Formula**: Enforces the $x \cdot y = k$ invariant across all trades.
+- **0.3% Trading Fee**: Deducts 30 basis points ($997/1000$ factor) from input amounts during swaps.
+- **Fee Accumulation for LPs**: Retains collected fees within the pool reserves, naturally growing $k$ and increasing the token value backing each LP share.
+- **Fixed-Point Price Calculation**: Exposes `getPrice()` scaled by $10^{18}$ to preserve decimal precision, gracefully returning `0` when reserves are uninitialized.
+- **Explicit Reserve Tracking**: Tracks `reserveA` and `reserveB` in contract storage to prevent balance-manipulation vulnerabilities.
+- **Safe Token Transfers**: Integrates OpenZeppelin's `SafeERC20` library (`safeTransfer` and `safeTransferFrom`) to protect against non-standard ERC-20 tokens.
+- **Reentrancy Protection**: Uses OpenZeppelin's `ReentrancyGuard` (`nonReentrant` modifier) following the Checks-Effects-Interactions pattern.
+- **Comprehensive Input Validation**: Reverts on zero deposits, zero swaps, zero liquidity burns, invalid ratios, and empty/identical constructor addresses.
+- **Event Emission**: Emits `LiquidityAdded`, `LiquidityRemoved`, and `Swap` events with indexed parameters for indexing and frontend tracking.
+- **Automated Test Suite**: 33 passing automated tests covering all functional flows, boundary conditions, precision scaling, and security edge cases.
+- **Hardhat Deployment Script**: Standalone deployment script for deploying mock tokens and the DEX contract.
+- **Docker Support**: Containerized environment via `Dockerfile` and `docker-compose.yml` for reproducible execution.
 
 ---
 
 ## Architecture
 
+The project is structured into modular components:
+
 ```
-                      +------------------------------------------+
-                      |                 DEX.sol                  |
-                      |  - ReentrancyGuard (nonReentrant)        |
-                      |  - SafeERC20 (safeTransfer/From)         |
-                      +--------------------+---------------------+
-                                           |
-                +--------------------------+--------------------------+
-                |                                                     |
-     +----------v----------+                               +----------v----------+
-     |     Liquidity       |                               |     Token Swaps     |
-     |  - addLiquidity()   |                               |  - swapAForB()      |
-     |  - removeLiquidity()|                               |  - swapBForA()      |
-     +----------+----------+                               +----------+----------+
-                |                                                     |
-                +--------------------------+--------------------------+
-                                           |
-                               +-----------v-----------+
-                               |     Pool State        |
-                               |  - reserveA, reserveB |
-                               |  - totalLiquidity     |
-                               |  - liquidity mapping  |
-                               +-----------------------+
+contracts/
+├── DEX.sol           # Core AMM exchange, liquidity, swaps, and math
+└── MockERC20.sol     # ERC-20 mock token for local testing and deployment
+scripts/
+└── deploy.js         # Deployment script for local Hardhat network
+test/
+└── DEX.test.js       # Comprehensive Hardhat test suite (33 test cases)
 ```
 
-### Smart Contracts
+### Component Responsibilities
 
 1. **`contracts/DEX.sol`**:
-   - Manages pool reserves (`reserveA`, `reserveB`) and LP tokens (`totalLiquidity`, `liquidity[provider]`).
-   - Implements `addLiquidity`, `removeLiquidity`, `swapAForB`, `swapBForA`, `getPrice`, `getReserves`, and `getAmountOut`.
-   - Inherits `ReentrancyGuard` and applies `nonReentrant` to all state-modifying external methods.
-   - Applies `using SafeERC20 for IERC20` to all token movements (`safeTransferFrom`, `safeTransfer`).
+   - Manages the core AMM pool reserves (`reserveA` and `reserveB`).
+   - Tracks pool ownership using `totalLiquidity` and `liquidity[provider]`.
+   - Executes liquidity deposits and withdrawals with ratio checks and safe transfers.
+   - Executes token swaps using the constant product formula with fee deduction.
+   - Calculates spot price with $10^{18}$ fixed-point scaling.
+   - Guards all state-changing functions against reentrancy via `ReentrancyGuard`.
 
 2. **`contracts/MockERC20.sol`**:
-   - Standard ERC-20 implementation derived from OpenZeppelin `ERC20`.
-   - Mints 1,000,000 tokens ($10^{24}$ wei) to the deployer upon construction.
-   - Exposes a public `mint(address to, uint256 amount)` helper for testing multi-account scenarios.
+   - Implements standard ERC-20 functionality using OpenZeppelin `ERC20`.
+   - Mints initial test balances to the deployer and provides a `mint()` function for setting up test accounts.
 
-### Swap & Liquidity Flow
+3. **`test/DEX.test.js`**:
+   - Validates all contract behavior using Hardhat, Ethers.js, and Chai.
+   - Tests initial and subsequent liquidity, ratio enforcement, swaps, fee accrual, price calculations, edge cases, and events.
 
-1. **Liquidity Inflow**:
-   - Provider approves tokens $\rightarrow$ Calls `addLiquidity(amountA, amountB)` $\rightarrow$ DEX verifies non-zero inputs $\rightarrow$ If first deposit, mints $\sqrt{amountA \cdot amountB}$; if subsequent, validates $amountB == (amountA \cdot reserveB) / reserveA$ and mints $(amountA \cdot totalLiquidity) / reserveA$ $\rightarrow$ Updates reserves $\rightarrow$ Safely pulls tokens via `safeTransferFrom`.
-2. **Liquidity Outflow**:
-   - Provider calls `removeLiquidity(liquidityAmount)` $\rightarrow$ Validates provider LP balance $\rightarrow$ Computes proportional shares: $amountA = (liquidity \cdot reserveA) / totalLiquidity$ and $amountB = (liquidity \cdot reserveB) / totalLiquidity$ $\rightarrow$ Updates balances and burns LP shares $\rightarrow$ Safely transfers tokens to provider via `safeTransfer`.
-3. **Token Swap**:
-   - Trader approves input token $\rightarrow$ Calls `swapAForB(amountAIn)` or `swapBForA(amountBIn)` $\rightarrow$ Computes `amountOut` using `getAmountOut` ($0.3\%$ fee included) $\rightarrow$ Updates pool reserves $\rightarrow$ Emits `Swap` $\rightarrow$ Safely pulls input tokens and transfers output tokens.
+4. **`scripts/deploy.js`**:
+   - Automates the deployment of `MockERC20` (Token A), `MockERC20` (Token B), and `DEX`.
+   - Logs deployed contract addresses and deployer balances.
+
+### Architecture & Interaction Flow
+
+```
+                         +-----------------------------------+
+                         |               User                |
+                         +-----------------+-----------------+
+                                           |
+                                           v
+                         +-----------------------------------+
+                         |           DEX Contract            |
+                         |   (ReentrancyGuard + SafeERC20)   |
+                         +-----------------+-----------------+
+                                           |
+        +----------------------------------+----------------------------------+
+        |                                  |                                  |
+        v                                  v                                  v
++-----------------------+      +-----------------------+      +-----------------------+
+| Liquidity Management  |      |      Token Swaps      |      |   Price & Reserves    |
+| - addLiquidity()      |      | - swapAForB()         |      | - getPrice() (1e18)   |
+| - removeLiquidity()   |      | - swapBForA()         |      | - getReserves()       |
+| - Ratio Enforcement   |      | - getAmountOut()      |      | - reserveA, reserveB  |
+| - LP Minting / Burn   |      | - 0.3% Fee Retained   |      | - totalLiquidity      |
++-----------+-----------+      +-----------+-----------+      +-----------------------+
+            |                              |
+            +--------------+---------------+
+                           |
+                           v (safeTransfer / safeTransferFrom)
+            +----------------------------------+
+            |         MockERC20 Tokens         |
+            |     (Token A    /    Token B)    |
+            +----------------------------------+
+```
+
+### System Interaction Overview
+
+- **Liquidity & Reserves**: When users deposit tokens via `addLiquidity()`, tokens are transferred into the DEX, and `reserveA` and `reserveB` are updated. LP tokens are minted to represent the user's fractional pool share.
+- **Swaps & Reserves**: When users swap tokens via `swapAForB()` or `swapBForA()`, the input token is added to the input reserve, the 0.3% fee is deducted, and the output amount is sent to the user from the output reserve.
+- **Reserves & LP Ownership**: As swaps occur, fees stay in the reserves, expanding the total asset backing per LP share without increasing `totalLiquidity`.
+- **Withdrawal**: When calling `removeLiquidity()`, the user's LP shares are burned, returning their exact fraction of the increased reserves.
 
 ---
 
 ## Mathematical Implementation
 
-### 1. Constant Product Formula
-The core invariant of the pool is:
+### Constant Product Formula
+The AMM maintains the constant product invariant:
+
 $$x \cdot y = k$$
 
 Where:
-- $x = reserveA$
-- $y = reserveB$
-- $k$ = constant product value
+- $x = \text{reserveA}$ (pool balance of Token A)
+- $y = \text{reserveB}$ (pool balance of Token B)
+- $k$ = constant product
 
-### 2. Fee Calculation & Swap Pricing
-Each swap applies a $0.3\%$ fee ($997/1000$ net factor). For input $\Delta x$:
-$$\Delta x_{\text{fee}} = \Delta x \cdot 997$$
+Reserves determine the relative spot price between tokens. Any swap shifts the reserve balance along the curve, adjusting the marginal price dynamically based on trade size.
 
-The output amount $\Delta y$ is derived from:
-$$(x + \Delta x_{\text{net}})(y - \Delta y) = x \cdot y$$
+---
 
-Yielding:
-$$\Delta y = \frac{\Delta x \cdot 997 \cdot y}{x \cdot 1000 + \Delta x \cdot 997}$$
+### Initial Liquidity
+When the pool is uninitialized (`totalLiquidity == 0`), the first provider deposits any non-zero amounts of Token A and Token B, establishing the initial pool ratio. LP shares are minted using the geometric mean:
 
-Because the deducted $0.3\%$ fee remains in the pool, the product $k$ after each swap strictly increases:
-$$k_{\text{after}} > k_{\text{before}}$$
+$$\text{liquidityMinted} = \lfloor\sqrt{\text{amountA} \cdot \text{amountB}}\rfloor$$
 
-### 3. LP Token Minting
+This ensures that the initial LP share amount is proportional to the geometric scale of the liquidity provided.
 
-#### Initial Liquidity ($totalLiquidity = 0$)
-The genesis liquidity provider defines the initial pricing ratio. LP tokens are minted using the geometric mean:
-$$\text{liquidityMinted} = \lfloor\sqrt{amountA \cdot amountB}\rfloor$$
+---
 
-#### Subsequent Liquidity ($totalLiquidity > 0$)
-To prevent price manipulation and unfair dilution, subsequent liquidity is constrained by the current reserve ratio:
-$$\text{amountBOptimal} = \frac{amountA \cdot reserveB}{reserveA}$$
+### Subsequent Liquidity
+Once initial liquidity exists (`totalLiquidity > 0`), subsequent liquidity providers must supply tokens matching the current pool reserve ratio:
 
-The contract strictly requires:
-$$amountB == \text{amountBOptimal}$$
+$$\text{amountBOptimal} = \frac{\text{amountA} \cdot \text{reserveB}}{\text{reserveA}}$$
 
-LP shares are then minted proportionally:
-$$\text{liquidityMinted} = \frac{amountA \cdot totalLiquidity}{reserveA}$$
+The contract strictly enforces this reserve ratio in `contracts/DEX.sol`:
 
-### 4. Liquidity Removal
-When burning $L_{\text{burn}}$ LP shares, the user receives their exact fractional share of current reserves:
-$$amountA = \frac{L_{\text{burn}} \cdot reserveA}{totalLiquidity}$$
-$$amountB = \frac{L_{\text{burn}} \cdot reserveB}{totalLiquidity}$$
+```solidity
+uint256 amountBOptimal = (amountA * reserveB) / reserveA;
+require(amountB >= amountBOptimal, "Insufficient B amount");
+require(amountB == amountBOptimal, "Ratio mismatch");
+liquidityMinted = (amountA * totalLiquidity) / reserveA;
+```
 
-Because $reserveA$ and $reserveB$ grow from accumulated swap fees, $(amountA, amountB)$ returned will exceed the original deposits for long-term LPs.
+This dual check ensures:
+1. The deposit matches the current reserve ratio exactly.
+2. The pool price is not altered by liquidity additions.
+3. Existing liquidity providers are not diluted.
+4. LP shares are minted proportionally to Token A contribution:
 
-### 5. Spot Price Scaling
-To avoid integer division truncation in Solidity when $reserveB < reserveA$, `getPrice()` applies a fixed-point scaling factor of $10^{18}$:
-$$\text{Price} = \frac{reserveB \cdot 10^{18}}{reserveA}$$
+$$\text{liquidityMinted} = \frac{\text{amountA} \cdot \text{totalLiquidity}}{\text{reserveA}}$$
 
-- Represents the price of $1.0$ Token A in units of Token B (with 18 decimal places).
-- Gracefully returns `0` if $reserveA == 0$.
+---
+
+### Liquidity Removal
+When a provider withdraws liquidity, their LP shares are burned in exchange for their proportional share of the current pool reserves:
+
+$$\text{amountA} = \frac{\text{liquidityBurned} \cdot \text{reserveA}}{\text{totalLiquidity}}$$
+
+$$\text{amountB} = \frac{\text{liquidityBurned} \cdot \text{reserveB}}{\text{totalLiquidity}}$$
+
+Because trading fees increase `reserveA` and `reserveB` over time while `totalLiquidity` remains unchanged during swaps, withdrawing providers receive more tokens than they originally contributed.
+
+---
+
+### Swap Formula
+Each swap charges a 0.3% fee ($997/1000$ multiplier). The effective input amount after fee deduction is:
+
+$$\text{amountInWithFee} = \text{amountIn} \cdot 997$$
+
+The output amount is calculated by `getAmountOut()`:
+
+$$\text{numerator} = \text{amountInWithFee} \cdot \text{reserveOut}$$
+
+$$\text{denominator} = (\text{reserveIn} \cdot 1000) + \text{amountInWithFee}$$
+
+$$\text{amountOut} = \frac{\text{numerator}}{\text{denominator}}$$
+
+The 0.3% fee remains inside the liquidity pool reserves, ensuring that $k$ strictly increases after each swap ($k_{\text{after}} > k_{\text{before}}$).
+
+---
+
+### Price Calculation
+The spot price of Token A in terms of Token B is exposed via `getPrice()`. To eliminate integer division truncation in Solidity when $\text{reserveB} < \text{reserveA}$, the price is scaled by a $10^{18}$ fixed-point multiplier:
+
+$$\text{price} = \frac{\text{reserveB} \cdot 10^{18}}{\text{reserveA}}$$
+
+- Returns a $10^{18}$-scaled fixed-point value representing the price of 1.0 Token A in units of Token B.
+- Gracefully returns `0` if $\text{reserveA} == 0$ without reverting.
+
+---
+
+## Security Considerations
+
+The DEX implementation incorporates defensive security practices:
+
+- **OpenZeppelin SafeERC20**: Token transfers use `safeTransfer` and `safeTransferFrom`, protecting against non-standard ERC-20 tokens that return `false` or do not return booleans.
+- **ReentrancyGuard**: All state-modifying external functions (`addLiquidity`, `removeLiquidity`, `swapAForB`, `swapBForA`) are protected by OpenZeppelin's `nonReentrant` modifier.
+- **Checks-Effects-Interactions (CEI)**: State variables (`reserveA`, `reserveB`, `totalLiquidity`, `liquidity`) are updated before external token transfer calls.
+- **Solidity 0.8+ Arithmetic Safety**: Built-in compiler-level overflow and underflow protection on all mathematical operations.
+- **Subsequent Liquidity Ratio Enforcement**: Prevents price manipulation and LP dilution by requiring exact reserve ratios on subsequent deposits.
+- **Input & Parameter Validation**: Validates non-zero amounts (`Zero amount`, `Zero input`, `Zero liquidity`), non-zero constructor addresses, and non-identical pair addresses (`Identical token addresses`).
+- **Reserves Availability**: Reverts swaps if reserves are uninitialized (`No liquidity`) or if requested output exceeds available reserves.
+
+### Known Limitations
+
+- **No Mempool Slippage Protection**: The current base interface (`swapAForB(amountAIn)`) does not accept `minAmountOut` or `deadline` parameters. In a public mempool environment, users would be vulnerable to sandwich and front-running attacks without a router contract providing slippage bounds.
+- **Single Trading Pair**: The contract manages a single pair of tokens. It does not include a factory contract or multi-hop routing mechanism.
+- **Token Decimals Assumption**: Price scaling assumes standard 18-decimal tokens.
+- **Audit Status**: This code has not undergone a formal third-party security audit.
+
+---
+
+## Testing
+
+The project includes an automated test suite executed via Hardhat and Mocha/Chai.
+
+### Verified Test Results
+
+```text
+33 passing (14s)
+0 failing
+```
+
+### Verified Code Coverage
+
+```text
+----------------|----------|----------|----------|----------|----------------|
+File            |  % Stmts | % Branch |  % Funcs |  % Lines |Uncovered Lines |
+----------------|----------|----------|----------|----------|----------------|
+ contracts/     |      100 |    75.86 |      100 |      100 |                |
+  DEX.sol       |      100 |    75.86 |      100 |      100 |                |
+  MockERC20.sol |      100 |      100 |      100 |      100 |                |
+----------------|----------|----------|----------|----------|----------------|
+All files       |      100 |    75.86 |      100 |      100 |                |
+----------------|----------|----------|----------|----------|----------------|
+```
+
+### Test Categories Covered
+
+1. **Liquidity Management (10 tests)**:
+   - Initial liquidity provision and reserve tracking
+   - Correct initial LP token minting using geometric mean
+   - Subsequent liquidity provision with reserve matching
+   - Maintaining price ratio on liquidity additions
+   - Partial and full liquidity removal
+   - Accurate proportional token amounts returned on removal
+   - Reverts on zero liquidity additions
+   - Reverts when withdrawing more liquidity than owned
+   - Reverts on zero liquidity removal
+   - Reverts when subsequent liquidity does not match the reserve ratio
+2. **Token Swaps (9 tests)**:
+   - Token A for Token B swaps
+   - Token B for Token A swaps
+   - Correct output calculation with 0.3% fee applied
+   - Reserve updates matching input and output
+   - Verified $k$ increase after swaps due to fee retention
+   - Reverts on zero swap amounts
+   - High price impact handling on large swaps
+   - Multiple consecutive swaps maintaining state consistency
+   - Reverts when swapping with zero reserves
+3. **Price Calculations (4 tests)**:
+   - Correct initial price calculation
+   - Dynamic price updates following swaps
+   - Graceful handling of zero reserves (returns 0)
+   - High-precision fixed-point scaling ($10^{18}$) when `reserveB < reserveA`
+4. **Fee Distribution (2 tests)**:
+   - Fee accumulation benefiting liquidity providers upon withdrawal
+   - Proportional fee distribution matching LP shares
+5. **Edge Cases (4 tests)**:
+   - Minimum liquidity handling (1-wei deposits and sqrt edge cases)
+   - Large liquidity deposits without arithmetic overflow
+   - Unauthorized access prevention (users with 0 LP cannot withdraw pool assets)
+   - Rejection of invalid/identical token addresses during construction
+6. **Events (4 tests)**:
+   - `LiquidityAdded` event emission with parameters
+   - `LiquidityRemoved` event emission with parameters
+   - `Swap` event emission with parameters
+   - Non-negative reserve validation
 
 ---
 
 ## Setup Instructions
 
 ### Prerequisites
-- [Node.js](https://nodejs.org/) (v18.x or v20.x recommended)
-- [npm](https://www.npmjs.com/) (v9.x or v10.x)
-- [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/) (optional, for containerized execution)
-- [Git](https://git-scm.com/)
+
+- **Node.js**: v18.x or v20.x
+- **npm**: v9.x or v10.x
+- **Git**
+- **Docker & Docker Compose** (for containerized execution)
+
+---
 
 ### Local Installation
 
@@ -165,7 +329,7 @@ $$\text{Price} = \frac{reserveB \cdot 10^{18}}{reserveA}$$
    npm run compile
    ```
 
-4. Run the automated test suite (all 33 tests):
+4. Run the automated test suite:
    ```bash
    npm test
    ```
@@ -175,16 +339,16 @@ $$\text{Price} = \frac{reserveB \cdot 10^{18}}{reserveA}$$
    npm run coverage
    ```
 
-6. Deploy contracts locally to Hardhat network:
+6. Deploy to local Hardhat network:
    ```bash
    npm run deploy
    ```
 
 ---
 
-## Docker Setup
+### Docker Setup
 
-A production-ready `Dockerfile` and `docker-compose.yml` are provided for reproducible containerized testing.
+The project includes container configuration for running in isolated environments:
 
 1. Build and start the container:
    ```bash
@@ -196,70 +360,43 @@ A production-ready `Dockerfile` and `docker-compose.yml` are provided for reprod
    docker-compose exec app npm run compile
    ```
 
-3. Execute test suite inside Docker:
+3. Run test suite inside Docker:
    ```bash
    docker-compose exec app npm test
    ```
 
-4. Generate coverage inside Docker:
+4. Run coverage analysis inside Docker:
    ```bash
    docker-compose exec app npm run coverage
    ```
 
-5. Stop and clean up containers:
+5. Stop container:
    ```bash
    docker-compose down
    ```
 
 ---
 
-## Contract Addresses
+## Deployment
 
-This project is configured for local testing and evaluation on the Hardhat Network (Chain ID: `31337`).
+The deployment script [`scripts/deploy.js`](scripts/deploy.js) automates local contract deployment:
 
-Local deployment addresses generated via `npm run deploy`:
-- **Mock Token A (`MockERC20`)**: `0x5FbDB2315678afecb367f032d93F642f64180aa3`
-- **Mock Token B (`MockERC20`)**: `0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512`
-- **DEX (`DEX.sol`)**: `0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0`
+```bash
+npm run deploy
+```
 
-*(Note: No testnet or mainnet contracts have been deployed. Real mainnet deployments should only occur after formal security audits).*
+Sample output on local Hardhat Network (Chain ID: `31337`):
 
----
+```text
+Deploying Mock Token A...
+Mock Token A deployed to: 0x5FbDB2315678afecb367f032d93F642f64180aa3
 
-## Security Considerations
+Deploying Mock Token B...
+Mock Token B deployed to: 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
 
-1. **Reentrancy Protection**:
-   - Uses OpenZeppelin's `ReentrancyGuard` (`nonReentrant` modifier) on `addLiquidity`, `removeLiquidity`, `swapAForB`, and `swapBForA`.
-   - Adheres to Checks-Effects-Interactions (CEI) pattern: internal state variables (`reserveA`, `reserveB`, `liquidity`, `totalLiquidity`) are updated before token transfers are dispatched.
-
-2. **Safe Token Transfers (`SafeERC20`)**:
-   - Employs OpenZeppelin's `SafeERC20` wrapper (`safeTransfer`, `safeTransferFrom`) for all token interactions.
-   - Prevents vulnerabilities with non-standard ERC-20 tokens that return `false` or return no boolean on transfer instead of reverting.
-
-3. **Subsequent Liquidity Ratio Enforcement**:
-   - Rejects unbalanced subsequent liquidity additions that attempt to alter the pool ratio without executing a swap.
-   - Enforces $amountB == (amountA \cdot reserveB) / reserveA$, preventing arbitrary price shifts and LP share dilution.
-
-4. **Arithmetic Safety**:
-   - Solidity `^0.8.19` provides native compiler-level overflow and underflow checks on all math operations.
-
-5. **Input & State Validation**:
-   - Explicit zero-amount validations (`Zero amount`, `Zero input`, `Zero liquidity`).
-   - Constructor validates non-zero token addresses and forbids identical token addresses (`Identical token addresses`).
-   - Swaps revert when reserves are zero (`No liquidity`) or when output amount exceeds available pool reserves.
-
----
-
-## Known Limitations
-
-1. **Single Token Pair**:
-   - The contract supports one isolated token pair (`Token A` / `Token B`). It does not incorporate a factory pattern or multi-hop routing protocol.
-2. **Slippage Protection**:
-   - The base assignment interface specifies `swapAForB(uint256 amountAIn)` without a `minAmountOut` parameter. In a public mainnet environment with an open mempool, a router contract with slippage bounds (`minAmountOut`) and transaction expiration deadlines (`deadline`) would be required to prevent front-running and MEV sandwich attacks.
-3. **Decimals Assumption**:
-   - The price scaling formula assumes 18-decimal tokens for standard 1:1 units. Tokens with non-18 decimals would require dynamic decimal normalization.
-4. **Flash Swaps & Concentrated Liquidity**:
-   - Features like flash loans, multi-token baskets, or concentrated liquidity (Uniswap V3 ticks) are intentionally omitted to maintain strict adherence to the Uniswap V2 core assignment specifications.
+Deploying DEX contract...
+DEX deployed to: 0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0
+```
 
 ---
 
